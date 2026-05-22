@@ -7,8 +7,6 @@ import random
 import re
 from dataclasses import dataclass
 
-from playwright.async_api import async_playwright, Page, Browser
-
 from adspy.config.settings import PROXY_URL
 
 _USER_AGENTS = [
@@ -50,6 +48,8 @@ async def scrape_ad_library(
     Returns:
         List of ScrapedAd
     """
+    from playwright.async_api import async_playwright
+
     launch_kwargs = {"headless": True}
     if PROXY_URL:
         launch_kwargs["proxy"] = {"server": PROXY_URL}
@@ -129,7 +129,7 @@ async def scrape_ad_library(
     return ads[:max_ads]
 
 
-async def _extract_cards(page: Page, seen: set[str]) -> list[ScrapedAd]:
+async def _extract_cards(page, seen: set[str]) -> list[ScrapedAd]:
     """Extract ad cards from current page state."""
     new_ads = []
 
