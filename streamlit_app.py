@@ -442,9 +442,22 @@ with st.sidebar:
 
 
 
-tab_collect, tab_scrape, tab_deep, tab_search, tab_pages, tab_bundles, tab_export = st.tabs([
-    "🚀 Collect", "🌐 Full Scrape", "🕷️ Deep Scan", "🔎 Search", "📊 Top Pages", "🔗 Bundles", "📥 Export"
-])
+_HAS_PLAYWRIGHT = False
+try:
+    import playwright
+    _HAS_PLAYWRIGHT = True
+except ImportError:
+    pass
+
+if _HAS_PLAYWRIGHT:
+    tab_collect, tab_scrape, tab_deep, tab_search, tab_pages, tab_bundles, tab_export = st.tabs([
+        "🚀 Collect", "🌐 Full Scrape", "🕷️ Deep Scan", "🔎 Search", "📊 Top Pages", "🔗 Bundles", "📥 Export"
+    ])
+else:
+    tab_collect, tab_deep, tab_search, tab_pages, tab_bundles, tab_export = st.tabs([
+        "🚀 Collect", "🕷️ Deep Scan", "🔎 Search", "📊 Top Pages", "🔗 Bundles", "📥 Export"
+    ])
+    tab_scrape = None
 
 # ======================== COLLECT TAB ========================
 with tab_collect:
@@ -527,67 +540,67 @@ with tab_collect:
                 st.warning("No ads found. Check token or keywords.")
 
 # ======================== FULL SCRAPE TAB ========================
-with tab_scrape:
-    st.subheader("Full Scrape — ALL ads from Ad Library website")
-    st.caption("Scrolls facebook.com/ads/library without keywords — gets everything")
+if tab_scrape is not None:
+    with tab_scrape:
+        st.subheader("Full Scrape — ALL ads from Ad Library website")
+        st.caption("Scrolls facebook.com/ads/library without keywords — gets everything")
 
-    sc1, sc2 = st.columns(2)
-    scrape_max = sc1.slider("Max ads to collect", 50, 2000, 500, step=50, key="scrape_max")
-    scrape_pause = sc2.slider("Pause between scrolls (sec)", 3, 15, 5, key="scrape_pause")
+        sc1, sc2 = st.columns(2)
+        scrape_max = sc1.slider("Max ads to collect", 50, 2000, 500, step=50, key="scrape_max")
+        scrape_pause = sc2.slider("Pause between scrolls (sec)", 3, 15, 5, key="scrape_pause")
 
-    st.info(
-        "**No proxy:** safe for ~200-500 ads/session with pauses. "
-        "To collect more, add `PROXY_URL` to `.env`"
-    )
+        st.info(
+            "**No proxy:** safe for ~200-500 ads/session with pauses. "
+            "To collect more, add `PROXY_URL` to `.env`"
+        )
 
-    if st.button("🌐 START FULL SCRAPE", type="primary", use_container_width=True):
-        try:
-            from adspy.sources.fb_scraper import scrape_ad_library, ScrapedAd
-        except Exception as import_err:
-            st.error(f"Failed to load scraper: {import_err}")
-            st.stop()
+        if st.button("🌐 START FULL SCRAPE", type="primary", use_container_width=True):
+            try:
+                from adspy.sources.fb_scraper import scrape_ad_library, ScrapedAd
+            except Exception as import_err:
+                st.error(f"Failed to load scraper: {import_err}")
+                st.stop()
 
-        progress_placeholder = st.empty()
-        status_placeholder = st.empty()
+            progress_placeholder = st.empty()
+            status_placeholder = st.empty()
 
-        def on_progress(count, text):
-            progress_placeholder.metric("Ads collected", count)
-            status_placeholder.text(text)
+            def on_progress(count, text):
+                progress_placeholder.metric("Ads collected", count)
+                status_placeholder.text(text)
 
-        status_placeholder.text("Launching browser...")
-        scraped = asyncio.run(scrape_ad_library(
-            country=country,
-            max_ads=scrape_max,
-            scroll_pause_min=max(2.0, scrape_pause - 2),
-            scroll_pause_max=scrape_pause + 2,
-            on_progress=on_progress,
-        ))
+            status_placeholder.text("Launching browser...")
+            scraped = asyncio.run(scrape_ad_library(
+                country=country,
+                max_ads=scrape_max,
+                scroll_pause_min=max(2.0, scrape_pause - 2),
+                scroll_pause_max=scrape_pause + 2,
+                on_progress=on_progress,
+            ))
 
-        if scraped:
-            # Convert to DB format and save
-            ads_to_save = []
-            for s in scraped:
-                ads_to_save.append({
-                    "id": f"fb_scrape_{s.ad_id}" if s.ad_id else f"fb_scrape_{hash(s.page_name + s.body[:50])}",
-                    "source": "fb_scraper",
-                    "page_id": s.page_id,
-                    "page_name": s.page_name,
-                    "body": s.body,
-                    "title": "",
-                    "snapshot_url": s.snapshot_url,
-                    "country": country,
-                    "niche": "",  # will be classified by Deep Scan
-                    "start_date": None,
-                    "stop_date": None,
-                    "is_active": True,
-                    "days_active": None,
-                    "raw": {},
-                })
-            saved = save_ads_to_db(ads_to_save)
-            st.success(f"Scraped **{len(scraped)}** ads, saved **{saved}** to DB")
-            st.caption("Now run **Deep Scan** to classify them (OCR + Gemini)")
-        else:
-            st.warning("No ads scraped. Facebook may have blocked or page structure changed.")
+            if scraped:
+                ads_to_save = []
+                for s in scraped:
+                    ads_to_save.append({
+                        "id": f"fb_scrape_{s.ad_id}" if s.ad_id else f"fb_scrape_{hash(s.page_name + s.body[:50])}",
+                        "source": "fb_scraper",
+                        "page_id": s.page_id,
+                        "page_name": s.page_name,
+                        "body": s.body,
+                        "title": "",
+                        "snapshot_url": s.snapshot_url,
+                        "country": country,
+                        "niche": "",
+                        "start_date": None,
+                        "stop_date": None,
+                        "is_active": True,
+                        "days_active": None,
+                        "raw": {},
+                    })
+                saved = save_ads_to_db(ads_to_save)
+                st.success(f"Scraped **{len(scraped)}** ads, saved **{saved}** to DB")
+                st.caption("Now run **Deep Scan** to classify them (OCR + Gemini)")
+            else:
+                st.warning("No ads scraped. Facebook may have blocked or page structure changed.")
 
 # ======================== DEEP SCAN TAB ========================
 with tab_deep:
