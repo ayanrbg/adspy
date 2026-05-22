@@ -116,21 +116,6 @@ def save_ads_to_db(ads: list[dict]) -> int:
     return saved
 
 
-def import_db_from_json(data: list[dict]) -> int:
-    return save_ads_to_db(data)
-
-
-def export_db_as_json() -> list[dict]:
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM ads ORDER BY days_active DESC").fetchall()
-    conn.close()
-    result = []
-    for r in rows:
-        d = dict(r)
-        d.pop("raw", None)
-        result.append(d)
-    return result
-
 
 def search_db(
     country: str, niche: str, min_days: int, only_active: bool,
@@ -315,26 +300,6 @@ with st.sidebar:
     c2.metric("Active", stats["active"])
     c3.metric("Pages", stats["pages"])
 
-    # Backup / restore for cloud
-    st.divider()
-    st.caption("💾 Backup (cloud resets DB on restart)")
-    db_data = export_db_as_json()
-    if db_data:
-        st.download_button(
-            "⬇️ Download backup",
-            json.dumps(db_data, ensure_ascii=False),
-            file_name=f"adspy_backup_{date.today()}.json",
-            mime="application/json",
-        )
-    uploaded = st.file_uploader("⬆️ Restore backup", type=["json"])
-    if uploaded:
-        try:
-            data = json.loads(uploaded.read())
-            count = import_db_from_json(data)
-            st.success(f"Restored {count} ads")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Import error: {e}")
 
 
 tab_collect, tab_search, tab_pages, tab_bundles, tab_export = st.tabs([
@@ -515,22 +480,12 @@ with tab_export:
     all_data = search_db(country, niche, 0, False, "days_active", 50000)
     if all_data:
         st.write(f"**{len(all_data)}** ads")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.download_button(
-                "📥 Download CSV",
-                export_csv(all_data),
-                file_name=f"adspy_{country}_{niche}_{date.today()}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        with c2:
-            st.download_button(
-                "📥 Download JSON",
-                json.dumps(export_db_as_json(), ensure_ascii=False, indent=2),
-                file_name=f"adspy_{country}_{niche}_{date.today()}.json",
-                mime="application/json",
-                use_container_width=True,
-            )
+        st.download_button(
+            "📥 Download CSV",
+            export_csv(all_data),
+            file_name=f"adspy_{country}_{niche}_{date.today()}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
     else:
         st.info("No data to export.")
