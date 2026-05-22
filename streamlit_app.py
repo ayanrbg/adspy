@@ -543,8 +543,8 @@ with tab_scrape:
     if st.button("🌐 START FULL SCRAPE", type="primary", use_container_width=True):
         try:
             from adspy.sources.fb_scraper import scrape_ad_library, ScrapedAd
-        except ImportError:
-            st.error("Install playwright first: `pip install playwright && playwright install chromium`")
+        except Exception as import_err:
+            st.error(f"Failed to load scraper: {import_err}")
             st.stop()
 
         progress_placeholder = st.empty()

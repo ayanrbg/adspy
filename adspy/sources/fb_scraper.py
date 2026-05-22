@@ -7,7 +7,9 @@ import random
 import re
 from dataclasses import dataclass
 
-from adspy.config.settings import PROXY_URL
+import os
+
+PROXY_URL = os.getenv("PROXY_URL", "")
 
 _USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
