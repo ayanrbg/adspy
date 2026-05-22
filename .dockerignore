@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+.git
+.env
+*.db
+adspy_local.db
+node_modules
+.venv

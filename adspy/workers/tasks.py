@@ -7,14 +7,17 @@ from adspy.sources.registry import SOURCE_REGISTRY
 from adspy.pipeline.processor import Pipeline
 from adspy.pipeline.steps import (
     DeduplicateStep, DownloadCreativeStep,
-    ClassifyStep, SignalsStep, SaveStep,
+    OCRStep, GeminiClassifyStep,
+    SignalsStep, SnowballStep, SaveStep,
 )
 
 pipeline = Pipeline([
     DeduplicateStep(),
     DownloadCreativeStep(),
-    ClassifyStep(),
+    OCRStep(),
+    GeminiClassifyStep(),
     SignalsStep(),
+    SnowballStep(),
     SaveStep(),
 ])
 

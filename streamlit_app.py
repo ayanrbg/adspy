@@ -195,6 +195,146 @@ def export_csv(ads: list[dict]) -> str:
     return output.getvalue()
 
 
+# ======================== DEEP SCAN HELPERS ========================
+
+def _match_gambling_text(text: str) -> float:
+    """Return confidence based on gambling keyword matches in text."""
+    if not text.strip():
+        return 0.0
+    import re as _re
+    lower = text.lower()
+    hits = sum(1 for kw in GAMBLING_IN_KEYWORDS if kw.lower() in lower)
+    if hits >= 3:
+        return 0.95
+    if hits == 2:
+        return 0.8
+    if hits == 1:
+        return 0.6
+    return 0.0
+
+
+def ocr_extract(image_bytes: bytes) -> str:
+    """Run OCR on image bytes, return extracted text."""
+    try:
+        import pytesseract
+    except ImportError:
+        raise RuntimeError("pytesseract not installed")
+    from PIL import Image
+    img = Image.open(io.BytesIO(image_bytes))
+    try:
+        return pytesseract.image_to_string(img, lang="eng+hin")
+    except Exception:
+        # Fallback to English only if Hindi not available
+        return pytesseract.image_to_string(img, lang="eng")
+
+
+async def download_image(url: str) -> bytes | None:
+    """Download image from URL."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status == 200:
+                return await resp.read()
+    return None
+
+
+async def gemini_classify_image(image_bytes: bytes, api_key: str) -> tuple[str, float]:
+    """Send image to Gemini Flash for classification."""
+    import base64
+    img_b64 = base64.b64encode(image_bytes).decode()
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    payload = {
+        "contents": [{
+            "parts": [
+                {"inline_data": {"mime_type": "image/png", "data": img_b64}},
+                {"text": (
+                    "Classify this ad creative. Return ONLY JSON: "
+                    "{\"niche\": \"...\", \"confidence\": 0.0-1.0}. "
+                    "Niches: gambling, nutra, dating, finance, ecommerce, other."
+                )},
+            ]
+        }]
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, params={"key": api_key}, json=payload) as resp:
+            data = await resp.json()
+    import re as _re
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    match = _re.search(r"\{[^}]+\}", text)
+    if match:
+        result = json.loads(match.group())
+        return result.get("niche", "other"), float(result.get("confidence", 0.0))
+    return ("other", 0.0)
+
+
+async def fetch_page_ads_api(token: str, page_id: str, country: str) -> list[dict]:
+    """Fetch all ads from a page via Facebook API (snowball)."""
+    params = {
+        "access_token": token,
+        "search_page_ids": page_id,
+        "ad_reached_countries": country,
+        "ad_type": "ALL",
+        "limit": 250,
+        "fields": FB_FIELDS,
+    }
+    ads = []
+    url = FB_API_URL
+    async with aiohttp.ClientSession() as session:
+        for _ in range(10):  # max 10 pages
+            if not url:
+                break
+            if _ == 0:
+                async with session.get(url, params=params) as resp:
+                    data = await resp.json()
+            else:
+                async with session.get(url) as resp:
+                    data = await resp.json()
+            if "error" in data:
+                break
+            batch = data.get("data", [])
+            if not batch:
+                break
+            for raw in batch:
+                ads.append(normalize_fb_ad(raw, country, "gambling"))
+            url = data.get("paging", {}).get("next")
+    return ads
+
+
+def update_ad_in_db(ad_id: str, body: str, niche: str, niche_confidence: float):
+    """Update an ad's body and niche in DB."""
+    conn = get_db()
+    conn.execute(
+        "UPDATE ads SET body = ?, niche = ? WHERE id = ?",
+        (body, niche, ad_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_ads_for_deep_scan(country: str, limit: int = 500) -> list[dict]:
+    """Get ads with empty/short body or low-confidence niche for deep scanning."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT * FROM ads
+        WHERE country = ? AND snapshot_url IS NOT NULL
+        AND (LENGTH(COALESCE(body, '')) < 10 OR niche = '' OR niche = 'other')
+        ORDER BY created_at DESC
+        LIMIT ?
+    """, (country, limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_gambling_page_ids(country: str) -> list[str]:
+    """Get page IDs that have at least 1 gambling ad."""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT DISTINCT page_id FROM ads
+        WHERE country = ? AND niche = 'gambling' AND page_id IS NOT NULL
+    """, (country,)).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
 # ======================== FACEBOOK API ========================
 
 FB_API_URL = "https://graph.facebook.com/v19.0/ads_archive"
@@ -302,8 +442,8 @@ with st.sidebar:
 
 
 
-tab_collect, tab_search, tab_pages, tab_bundles, tab_export = st.tabs([
-    "🚀 Collect", "🔎 Search", "📊 Top Pages", "🔗 Bundles", "📥 Export"
+tab_collect, tab_scrape, tab_deep, tab_search, tab_pages, tab_bundles, tab_export = st.tabs([
+    "🚀 Collect", "🌐 Full Scrape", "🕷️ Deep Scan", "🔎 Search", "📊 Top Pages", "🔗 Bundles", "📥 Export"
 ])
 
 # ======================== COLLECT TAB ========================
@@ -385,6 +525,188 @@ with tab_collect:
                 st.balloons()
             else:
                 st.warning("No ads found. Check token or keywords.")
+
+# ======================== FULL SCRAPE TAB ========================
+with tab_scrape:
+    st.subheader("Full Scrape — ALL ads from Ad Library website")
+    st.caption("Scrolls facebook.com/ads/library without keywords — gets everything")
+
+    sc1, sc2 = st.columns(2)
+    scrape_max = sc1.slider("Max ads to collect", 50, 2000, 500, step=50, key="scrape_max")
+    scrape_pause = sc2.slider("Pause between scrolls (sec)", 3, 15, 5, key="scrape_pause")
+
+    st.info(
+        "**No proxy:** safe for ~200-500 ads/session with pauses. "
+        "To collect more, add `PROXY_URL` to `.env`"
+    )
+
+    if st.button("🌐 START FULL SCRAPE", type="primary", use_container_width=True):
+        try:
+            from adspy.sources.fb_scraper import scrape_ad_library, ScrapedAd
+        except ImportError:
+            st.error("Install playwright first: `pip install playwright && playwright install chromium`")
+            st.stop()
+
+        progress_placeholder = st.empty()
+        status_placeholder = st.empty()
+
+        def on_progress(count, text):
+            progress_placeholder.metric("Ads collected", count)
+            status_placeholder.text(text)
+
+        status_placeholder.text("Launching browser...")
+        scraped = asyncio.run(scrape_ad_library(
+            country=country,
+            max_ads=scrape_max,
+            scroll_pause_min=max(2.0, scrape_pause - 2),
+            scroll_pause_max=scrape_pause + 2,
+            on_progress=on_progress,
+        ))
+
+        if scraped:
+            # Convert to DB format and save
+            ads_to_save = []
+            for s in scraped:
+                ads_to_save.append({
+                    "id": f"fb_scrape_{s.ad_id}" if s.ad_id else f"fb_scrape_{hash(s.page_name + s.body[:50])}",
+                    "source": "fb_scraper",
+                    "page_id": s.page_id,
+                    "page_name": s.page_name,
+                    "body": s.body,
+                    "title": "",
+                    "snapshot_url": s.snapshot_url,
+                    "country": country,
+                    "niche": "",  # will be classified by Deep Scan
+                    "start_date": None,
+                    "stop_date": None,
+                    "is_active": True,
+                    "days_active": None,
+                    "raw": {},
+                })
+            saved = save_ads_to_db(ads_to_save)
+            st.success(f"Scraped **{len(scraped)}** ads, saved **{saved}** to DB")
+            st.caption("Now run **Deep Scan** to classify them (OCR + Gemini)")
+        else:
+            st.warning("No ads scraped. Facebook may have blocked or page structure changed.")
+
+# ======================== DEEP SCAN TAB ========================
+with tab_deep:
+    st.subheader("Deep Scan — OCR + AI + Snowball")
+    st.caption("Find ads that keyword search missed: image-only ads, cloaked text, new pages")
+
+    gemini_key = st.text_input("Gemini API Key (free)", type="password",
+                               help="Get free key at aistudio.google.com")
+
+    col1, col2, col3 = st.columns(3)
+    run_ocr = col1.checkbox("OCR (extract text from images)", value=True)
+    run_gemini = col2.checkbox("Gemini AI classify", value=bool(gemini_key))
+    run_snowball = col3.checkbox("Snowball (expand pages)", value=bool(fb_token))
+
+    scan_limit = st.slider("Ads to scan", 10, 500, 100, key="scan_limit")
+
+    if st.button("🕷️ START DEEP SCAN", type="primary", use_container_width=True):
+        ocr_count = 0
+        gemini_count = 0
+        snowball_count = 0
+
+        # Phase 1: OCR
+        if run_ocr:
+            candidates = get_ads_for_deep_scan(country, scan_limit)
+            if candidates:
+                st.write(f"**Phase 1: OCR** — scanning {len(candidates)} ads...")
+                progress = st.progress(0)
+                for i, ad in enumerate(candidates):
+                    progress.progress((i + 1) / len(candidates))
+                    if not ad.get("snapshot_url"):
+                        continue
+                    try:
+                        img_bytes = asyncio.run(download_image(ad["snapshot_url"]))
+                        if not img_bytes:
+                            continue
+                        text = ocr_extract(img_bytes)
+                        if text.strip():
+                            conf = _match_gambling_text(text)
+                            if conf > 0.5:
+                                update_ad_in_db(ad["id"], text[:2000], "gambling", conf)
+                                ocr_count += 1
+                    except Exception as e:
+                        st.caption(f"OCR error: {ad['id']} — {e}")
+                st.success(f"OCR found **{ocr_count}** gambling ads from images")
+            else:
+                st.info("No candidates for OCR scan")
+
+        # Phase 2: Gemini
+        if run_gemini and gemini_key:
+            remaining = get_ads_for_deep_scan(country, scan_limit)
+            if remaining:
+                st.write(f"**Phase 2: Gemini** — classifying {len(remaining)} ads...")
+                progress2 = st.progress(0)
+                for i, ad in enumerate(remaining):
+                    progress2.progress((i + 1) / len(remaining))
+                    if not ad.get("snapshot_url"):
+                        continue
+                    try:
+                        img_bytes = asyncio.run(download_image(ad["snapshot_url"]))
+                        if not img_bytes:
+                            continue
+                        niche_result, conf = asyncio.run(
+                            gemini_classify_image(img_bytes, gemini_key)
+                        )
+                        if niche_result == "gambling" and conf > 0.5:
+                            body = ad.get("body") or ""
+                            update_ad_in_db(ad["id"], body, "gambling", conf)
+                            gemini_count += 1
+                    except Exception as e:
+                        st.caption(f"Gemini error: {ad['id']} — {e}")
+                        if "quota" in str(e).lower() or "429" in str(e):
+                            st.warning("Gemini rate limit hit, stopping AI phase")
+                            break
+                st.success(f"Gemini classified **{gemini_count}** gambling ads")
+            else:
+                st.info("No candidates for Gemini")
+
+        # Phase 3: Snowball
+        if run_snowball and fb_token:
+            gambling_pages = get_gambling_page_ids(country)
+            if gambling_pages:
+                st.write(f"**Phase 3: Snowball** — expanding {len(gambling_pages)} pages...")
+                progress3 = st.progress(0)
+                existing_ids = set()
+                conn = get_db()
+                for row in conn.execute("SELECT id FROM ads").fetchall():
+                    existing_ids.add(row[0])
+                conn.close()
+
+                new_ads = []
+                for i, pid in enumerate(gambling_pages):
+                    progress3.progress((i + 1) / len(gambling_pages))
+                    try:
+                        page_ads = asyncio.run(fetch_page_ads_api(fb_token, pid, country))
+                        for ad in page_ads:
+                            if ad["id"] not in existing_ids:
+                                existing_ids.add(ad["id"])
+                                ad["niche"] = "gambling"
+                                new_ads.append(ad)
+                    except Exception as e:
+                        st.caption(f"Snowball error: {pid} — {e}")
+
+                if new_ads:
+                    snowball_count = save_ads_to_db(new_ads)
+                st.success(f"Snowball found **{snowball_count}** new ads from gambling pages")
+            else:
+                st.info("No gambling pages to expand")
+
+        # Summary
+        st.divider()
+        total_found = ocr_count + gemini_count + snowball_count
+        if total_found > 0:
+            st.success(f"🎯 Deep Scan complete: **{total_found}** new gambling ads discovered")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("OCR", ocr_count)
+            c2.metric("Gemini AI", gemini_count)
+            c3.metric("Snowball", snowball_count)
+        else:
+            st.info("Deep Scan complete — no new gambling ads found this time")
 
 # ======================== SEARCH TAB ========================
 with tab_search:

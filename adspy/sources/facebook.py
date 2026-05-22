@@ -45,6 +45,30 @@ class FacebookSource(AdSource):
                         out.append(self._normalize(raw, cfg))
         return out
 
+    async def fetch_by_page_id(self, page_id: str, country: str = "IN") -> list[NormalizedAd]:
+        """Fetch all ads from a specific page (used by snowball)."""
+        out: list[NormalizedAd] = []
+        cfg = {"country": country, "niche": "gambling"}
+        async with aiohttp.ClientSession() as session:
+            params = {
+                "access_token": self._next_token(),
+                "search_page_ids": page_id,
+                "ad_reached_countries": country,
+                "ad_type": "ALL",
+                "limit": 100,
+                "fields": ",".join([
+                    "id", "page_id", "page_name",
+                    "ad_creative_bodies", "ad_creative_link_titles",
+                    "ad_snapshot_url", "ad_delivery_start_time",
+                    "ad_delivery_stop_time", "impressions",
+                ]),
+            }
+            async with session.get(self.BASE, params=params) as r:
+                data = await r.json()
+                for raw in data.get("data", []):
+                    out.append(self._normalize(raw, cfg))
+        return out
+
     def _normalize(self, raw: dict, cfg: dict) -> NormalizedAd:
         return NormalizedAd(
             id=f"fb_{raw['id']}",

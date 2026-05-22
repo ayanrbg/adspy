@@ -28,6 +28,9 @@ PROXY_URL = os.getenv("PROXY_URL", "")
 # Anthropic (Vision classification)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
+# Gemini (free tier classification)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
 # Stripe
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
