@@ -542,19 +542,30 @@ with tab_collect:
 # ======================== FULL SCRAPE TAB ========================
 if tab_scrape is not None:
     with tab_scrape:
-        st.subheader("Full Scrape — ALL ads from Ad Library website")
-        st.caption("Scrolls facebook.com/ads/library without keywords — gets everything")
+        st.subheader("Full Scrape — No API Token Needed")
+        st.caption("Searches Ad Library via browser, intercepts data from responses")
+
+        scrape_mode = st.radio("Keywords", [
+            "All gambling keywords (159)",
+            "Custom keywords",
+        ], horizontal=True, key="scrape_mode")
+
+        if scrape_mode == "Custom keywords":
+            scrape_kw_input = st.text_area(
+                "Keywords (one per line)", value="casino\nbetting\nrummy\naviator\nteen patti",
+                height=150, key="scrape_kw",
+            )
+            scrape_keywords = [k.strip() for k in scrape_kw_input.strip().split("\n") if k.strip()]
+        else:
+            scrape_keywords = GAMBLING_IN_KEYWORDS
 
         sc1, sc2 = st.columns(2)
-        scrape_max = sc1.slider("Max ads to collect", 50, 2000, 500, step=50, key="scrape_max")
+        scrape_max = sc1.slider("Max ads total", 50, 5000, 1000, step=50, key="scrape_max")
         scrape_pause = sc2.slider("Pause between scrolls (sec)", 3, 15, 5, key="scrape_pause")
 
-        st.info(
-            "**No proxy:** safe for ~200-500 ads/session with pauses. "
-            "To collect more, add `PROXY_URL` to `.env`"
-        )
+        st.caption(f"Keywords: **{len(scrape_keywords)}** | No Facebook token needed")
 
-        if st.button("🌐 START FULL SCRAPE", type="primary", use_container_width=True):
+        if st.button("🌐 START SCRAPE", type="primary", use_container_width=True):
             try:
                 from adspy.sources.fb_scraper import scrape_ad_library, ScrapedAd
             except Exception as import_err:
@@ -571,6 +582,7 @@ if tab_scrape is not None:
             status_placeholder.text("Launching browser...")
             scraped = asyncio.run(scrape_ad_library(
                 country=country,
+                keywords=scrape_keywords,
                 max_ads=scrape_max,
                 scroll_pause_min=max(2.0, scrape_pause - 2),
                 scroll_pause_max=scrape_pause + 2,
